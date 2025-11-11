@@ -11,7 +11,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using uPLibrary.Networking.M2Mqtt;
 using uPLibrary.Networking.M2Mqtt.Messages;
-using MySql.Data.MySqlClient; // Importar MySQL
+using MySql.Data.MySqlClient;
 
 namespace WpfApp1
 {
@@ -25,8 +25,8 @@ namespace WpfApp1
         private Dictionary<string, DispatcherTimer> timersApagado = new Dictionary<string, DispatcherTimer>();
         private Dictionary<string, bool> estadoMovimiento = new Dictionary<string, bool>();
 
-        // Base de datos MySQL - Configura estos valores
-        private string dbConnectionString = "Server=localhost;Database=domotica;User ID=root;Password=tu_password;";
+        // Base de datos MySQL
+        private string dbConnectionString = "Server=127.0.0.1;Port=3306;Database=domotica;Uid=root;Pwd=27182;";
 
         // Colección de eventos para el ListBox
         private ObservableCollection<EventoLog> eventos = new ObservableCollection<EventoLog>();
@@ -185,7 +185,6 @@ namespace WpfApp1
             }
         }
 
-        // Método adicional: Consultar eventos recientes
         private List<EventoLog> ConsultarEventosRecientes(int limite = 50)
         {
             List<EventoLog> eventosDB = new List<EventoLog>();
@@ -228,7 +227,6 @@ namespace WpfApp1
             return eventosDB;
         }
 
-        // Método adicional: Obtener estadísticas por zona
         private Dictionary<string, int> ObtenerEstadisticasPorZona()
         {
             Dictionary<string, int> stats = new Dictionary<string, int>();
@@ -265,7 +263,7 @@ namespace WpfApp1
 
         #endregion
 
-        #region Conexión MQTT
+        #region Conexión MQTT con Autenticación
 
         private void BtnConnect_Click(object sender, RoutedEventArgs e)
         {
@@ -287,11 +285,48 @@ namespace WpfApp1
                 int port = int.Parse(txtPort.Text);
                 string clientId = txtClientID.Text;
 
+                // Validaciones básicas
+                if (string.IsNullOrWhiteSpace(brokerIP))
+                {
+                    MessageBox.Show("Debe ingresar la IP del broker", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(clientId))
+                {
+                    MessageBox.Show("Debe ingresar un ID de cliente", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
                 mqttClient = new MqttClient(brokerIP, port, false, null, null, MqttSslProtocols.None);
 
                 mqttClient.MqttMsgPublishReceived += MqttClient_MqttMsgPublishReceived;
 
-                mqttClient.Connect(clientId);
+                // NUEVA LÓGICA: Verificar si se debe usar autenticación
+                bool useAuth = chkUseAuth?.IsChecked ?? false;
+
+                if (useAuth)
+                {
+                    string username = txtUsername?.Text ?? "";
+                    string password = txtPassword?.Password ?? "";
+
+                    if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+                    {
+                        MessageBox.Show("Debe ingresar usuario y contraseña cuando la autenticación está habilitada",
+                            "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+
+                    // Conectar CON autenticación
+                    mqttClient.Connect(clientId, username, password);
+                    AgregarEvento("MQTT", $"Conectado con autenticación (Usuario: {username})", "Sistema");
+                }
+                else
+                {
+                    // Conectar SIN autenticación (anónimo)
+                    mqttClient.Connect(clientId);
+                    AgregarEvento("MQTT", "Conectado sin autenticación (modo anónimo)", "Sistema");
+                }
 
                 if (mqttClient.IsConnected)
                 {
@@ -305,12 +340,13 @@ namespace WpfApp1
                     SubscribeToTopics();
 
                     AgregarEvento("MQTT", $"Conectado a broker {brokerIP}:{port}", "Sistema");
-                    txtStatusBar.Text = "Conectado al broker MQTT";
+                    txtStatusBar.Text = $"Conectado al broker MQTT - {brokerIP}:{port}";
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error al conectar: {ex.Message}", "Error de Conexión", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Error al conectar: {ex.Message}\n\nVerifique:\n• Que el broker esté ejecutándose\n• Las credenciales sean correctas\n• La IP y puerto sean válidos",
+                    "Error de Conexión MQTT", MessageBoxButton.OK, MessageBoxImage.Error);
                 AgregarEvento("MQTT", $"Error de conexión: {ex.Message}", "Sistema");
             }
         }
@@ -332,34 +368,41 @@ namespace WpfApp1
 
         private void SubscribeToTopics()
         {
-            // Suscribirse a estados de luces
-            string[] zonas = { "porche", "sala", "cocina", "habitacion1", "habitacion2", "bano", "patio" };
-
-            foreach (var zona in zonas)
+            try
             {
-                mqttClient.Subscribe(new string[] { $"{BASE_TOPIC}/{zona}/luz/estado" },
-                                    new byte[] { MqttMsgBase.QOS_LEVEL_AT_LEAST_ONCE });
-                mqttClient.Subscribe(new string[] { $"{BASE_TOPIC}/{zona}/temperatura" },
-                                    new byte[] { MqttMsgBase.QOS_LEVEL_AT_LEAST_ONCE });
-            }
+                // Suscribirse a estados de luces
+                string[] zonas = { "porche", "sala", "cocina", "habitacion1", "habitacion2", "bano", "patio" };
 
-            // Suscribirse a aires acondicionados
-            string[] zonasConAA = { "porche", "sala", "habitacion1", "habitacion2" };
-            foreach (var zona in zonasConAA)
+                foreach (var zona in zonas)
+                {
+                    mqttClient.Subscribe(new string[] { $"{BASE_TOPIC}/{zona}/luz/estado" },
+                                        new byte[] { MqttMsgBase.QOS_LEVEL_AT_LEAST_ONCE });
+                    mqttClient.Subscribe(new string[] { $"{BASE_TOPIC}/{zona}/temperatura" },
+                                        new byte[] { MqttMsgBase.QOS_LEVEL_AT_LEAST_ONCE });
+                }
+
+                // Suscribirse a aires acondicionados
+                string[] zonasConAA = { "porche", "sala", "habitacion1", "habitacion2" };
+                foreach (var zona in zonasConAA)
+                {
+                    mqttClient.Subscribe(new string[] { $"{BASE_TOPIC}/{zona}/aa/estado" },
+                                        new byte[] { MqttMsgBase.QOS_LEVEL_AT_LEAST_ONCE });
+                }
+
+                // Suscribirse a sensores de movimiento
+                string[] zonasConSensor = { "sala", "porche" };
+                foreach (var zona in zonasConSensor)
+                {
+                    mqttClient.Subscribe(new string[] { $"{BASE_TOPIC}/{zona}/sensor/movimiento" },
+                                        new byte[] { MqttMsgBase.QOS_LEVEL_AT_LEAST_ONCE });
+                }
+
+                AgregarEvento("MQTT", $"Suscrito a todos los tópicos bajo '{BASE_TOPIC}/#'", "Sistema");
+            }
+            catch (Exception ex)
             {
-                mqttClient.Subscribe(new string[] { $"{BASE_TOPIC}/{zona}/aa/estado" },
-                                    new byte[] { MqttMsgBase.QOS_LEVEL_AT_LEAST_ONCE });
+                MessageBox.Show($"Error al suscribirse a tópicos: {ex.Message}", "Error MQTT", MessageBoxButton.OK, MessageBoxImage.Error);
             }
-
-            // Suscribirse a sensores de movimiento
-            string[] zonasConSensor = { "sala", "porche" };
-            foreach (var zona in zonasConSensor)
-            {
-                mqttClient.Subscribe(new string[] { $"{BASE_TOPIC}/{zona}/sensor/movimiento" },
-                                    new byte[] { MqttMsgBase.QOS_LEVEL_AT_LEAST_ONCE });
-            }
-
-            AgregarEvento("MQTT", "Suscrito a todos los tópicos", "Sistema");
         }
 
         private void MqttClient_MqttMsgPublishReceived(object sender, MqttMsgPublishEventArgs e)
@@ -538,7 +581,9 @@ namespace WpfApp1
                     txtMovSala.Text = texto;
                     txtMovSala.Foreground = color;
                     break;
-                    // Agregar más zonas según sea necesario
+                case "porche":
+                    // Agregar TextBlock txtMovPorche en XAML si es necesario
+                    break;
             }
         }
 
